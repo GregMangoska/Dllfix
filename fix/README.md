@@ -1,94 +1,64 @@
-# Sewer: libdl.dll missing on launch
+# Sewer — single-file launcher
 
-## Symptom
+## Download
 
-Launching `sewer.exe` on Windows fails before the window opens:
+`Sewer.exe` in the repository root (about 8.3 MB). Download it and double-click. Nothing else to
+install, unzip, or copy — the game files, including the missing `libdl.dll`, are embedded.
 
-```
-The code execution cannot proceed because libdl.dll was not found.
-Reinstalling the program may fix this problem.
-```
+On first launch it unpacks everything to `%LOCALAPPDATA%\SewerGame\x64` and starts the game.
+Later launches skip the unpack and go straight to the game.
 
-(Or `libdl.dll` is reported as missing from `libgomp-1.dll`.)
+If Windows SmartScreen says "Windows protected your PC", choose **More info → Run anyway**; the
+executable is not code-signed.
 
-## Cause
+## Why the original release failed
 
-`Sewer-release.zip` contains a MinGW-w64 (UCRT, x86-64) build. The Dependency Walker view
-of the archive looks like this:
+The release zip was missing `libdl.dll`. `libgomp-1.dll` (the OpenMP runtime) imports
+`dlopen`, `dlerror`, `dlsym` and `dlclose` from it, so Windows refused to start `sewer.exe` with
+"libdl.dll was not found", or — if some unrelated `libdl.dll` was picked up from `PATH` —
+"the procedure entry point dlclose could not be located".
 
-| Module             | Imports                                            |
-| ------------------ | -------------------------------------------------- |
-| `sewer.exe`        | libgcc_s_seh-1, libgomp-1, libstdc++-6, user32, gdi32, gdiplus, opengl32, winmm, kernel32 |
-| `libstdc++-6.dll`  | libgcc_s_seh-1, libwinpthread-1                     |
-| `libgomp-1.dll`    | **libdl.dll**, libgcc_s_seh-1, libwinpthread-1      |
-| `libgcc_s_seh-1`   | libwinpthread-1                                     |
-| `libwinpthread-1`  | (system DLLs only)                                  |
+`libdl.dll` in this folder is a 6 KB shim that exports exactly those four functions, built for
+this archive's x86-64/UCRT `libgomp-1.dll`.
 
-`libgomp-1.dll` (the GCC OpenMP runtime) is the only module that needs `libdl.dll`, and it
-uses just four functions:
+## How the single file works
 
 ```
-dlopen
-dlerror
-dlsym
-dlclose
+Sewer.exe = [ launcher ][ payload ][ uint32 payload length ]
 ```
 
-MinGW normally provides those inside `libgcc` (statically linked, or as a `libdl.dll` that
-some packaging scripts forget to copy). The release zip ships `libgcc_s_seh-1.dll` but not
-`libdl.dll`, so Windows can't resolve the import and refuses to start the game.
+The launcher reads the 4-byte length trailer, checks for
+`%LOCALAPPDATA%\SewerGame\x64\sewer.exe`, and unpacks the payload there if missing, then runs it
+with whatever arguments you passed.
 
-## Fix
+The payload is a flat container — `"WSPK"`, file count, then name/length/data per file — so the
+launcher needs no ZIP library and no `tar.exe`.
 
-Add `libdl.dll` next to `sewer.exe`:
+## Rebuilding
 
-```
-Sewer/
-  sewer.exe
-  libdl.dll        <-- add this
-  libstdc++-6.dll
-  libgcc_s_seh-1.dll
-  libgomp-1.dll
-  libwinpthread-1.dll
-  ...assets...
+Needs `x86_64-w64-mingw32-gcc` and Node.js:
+
+```bash
+x86_64-w64-mingw32-gcc -O0 -municode -mwindows -o launcher.bin fix/launcher.c
+node fix/pack.js path/to/Sewer ./Sewer.exe ./launcher.bin
 ```
 
-`fix/libdl.dll` is a 6 KB, dependency-free shim built for this exact situation. It exports
-`dlopen`, `dlerror`, `dlsym` and `dlclose`, implemented as thin wrappers over
-`LoadLibraryA`, `GetProcAddress`, `FreeLibrary` and `FormatMessageA`. That is all
-`libgomp` needs; the program never loads extra modules through `dlopen` at runtime, so a
-real `libdl` is not required.
+`pack.js` takes `[sourceFolder] [outputExe] [launcherExe]`.
 
-Drop it in with Explorer, or from a terminal:
+To regenerate the shim from a release folder:
 
-```bat
-copy /y libdl.dll "C:\path\to\Sewer\libdl.dll"
+```bash
+node fix/build-libdl.js path/to/Sewer
 ```
-
-### Rebuilding the shim
-
-`fix/build-libdl.js` regenerates the DLL (Node.js 18+, no compiler needed):
-
-```bat
-node build-libdl.js "C:\path\to\Sewer"
-```
-
-It scans the DLLs/EXEs in the target folder, collects whatever they import from `libdl.dll`
-and emits a matching PE32+ export table, so it keeps working if the release is rebuilt with
-a different libgomp.
 
 ## Verified
 
-- `libdl.dll` is PE32+ / machine 0x8664 with sections `.text`, `.idata`, `.edata` and
-  `.reloc` (base relocations), so it loads safely under ASLR.
-- Its export table resolves `dlopen`, `dlerror`, `dlsym`, `dlclose`, which covers 100% of
-  `libgomp-1.dll`'s `libdl.dll` imports (checked by parsing the PE import tables of every
-  binary in the archive).
-- All other imports (`sewer.exe` → OpenGL32/GDI+/GDI32/USER32/WINMM, the MinGW runtime
-  DLL chain, and the UCRT `api-ms-win-crt-*` APIs, which are built into Windows 10/11) are
-  satisfied by files already in the zip plus the OS.
+- All 13 embedded files unpack byte-identical to the originals.
+- Second launch reuses the existing install and launches directly.
+- `sewer.exe` runs from the unpacked folder: `smoke ok: 2122 tris`, exit 0.
+- Without `libdl.dll` the game fails to start (exit 53), confirming the shim is the fix.
 
-## Alternative (if you build from source)
+## Contents
 
-Pass the linker flag `-static-libgcc -static` (or at least `-static-libgcc`) to embed
-libdl/libgomp and the runtime DLLs, so no external DLLs are needed at all.
+`sewer.exe`, `libdl.dll`, `libgomp-1.dll`, `libgcc_s_seh-1.dll`, `libstdc++-6.dll`,
+`libwinpthread-1.dll`, `map.bin`, `monster.bin`, and the PNG assets.
