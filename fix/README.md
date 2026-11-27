@@ -2,24 +2,28 @@
 
 ## Download
 
-`Sewer.exe` in the repository root (about 8.3 MB). Download it and double-click. Nothing else to
-install, unzip, or copy — the game files, including the missing `libdl.dll`, are embedded.
+**`Sewer.exe`** in the repository root (~8.7 MB). Double-click it.
 
-On first launch it unpacks everything to `%LOCALAPPDATA%\SewerGame\x64` and starts the game.
-Later launches skip the unpack and go straight to the game.
+No unzipping, no DLL copying. The game files, including a working `libdl.dll`, are inside.
 
-If Windows SmartScreen says "Windows protected your PC", choose **More info → Run anyway**; the
-executable is not code-signed.
+If SmartScreen warns about an unrecognised app: **More info → Run anyway** (the file is not
+code-signed).
 
-## Why the original release failed
+## Why you got "entry point dlclose could not be located in libgomp-1.dll"
 
-The release zip was missing `libdl.dll`. `libgomp-1.dll` (the OpenMP runtime) imports
-`dlopen`, `dlerror`, `dlsym` and `dlclose` from it, so Windows refused to start `sewer.exe` with
-"libdl.dll was not found", or — if some unrelated `libdl.dll` was picked up from `PATH` —
-"the procedure entry point dlclose could not be located".
+`libgomp-1.dll` imports four functions from `libdl.dll`. MinGW normally bundles them inside
+`libgcc`; this archive shipped neither, so the loader could not satisfy `dlopen`, `dlclose`,
+`dlsym`, `dlerror`.
 
-`libdl.dll` in this folder is a 6 KB shim that exports exactly those four functions, built for
-this archive's x86-64/UCRT `libgomp-1.dll`.
+The first version of this fix used a hand-assembled `libdl.dll`. Mistake: hand-built PE export
+tables can pass Wine's loader and still be rejected by the real Windows loader, which is exactly
+what happened on your machine.
+
+`fix/libdl.dll` is now built by the MinGW-w64 linker like any normal DLL, with `libdl.c` as the
+source. It depends only on `KERNEL32.dll` and `msvcrt.dll`, both present on every Windows install.
+
+The launcher also loads it by absolute path before starting the game, so another `libdl.dll`
+elsewhere on `PATH` cannot be picked up instead.
 
 ## How the single file works
 
@@ -27,36 +31,31 @@ this archive's x86-64/UCRT `libgomp-1.dll`.
 Sewer.exe = [ launcher ][ payload ][ uint32 payload length ]
 ```
 
-The launcher reads the 4-byte length trailer, checks for
-`%LOCALAPPDATA%\SewerGame\x64\sewer.exe`, and unpacks the payload there if missing, then runs it
-with whatever arguments you passed.
+The launcher reads the trailer, checks for `%LOCALAPPDATA%\SewerGame\x64\sewer.exe`, unpacks the
+payload there if missing, preloads `libdl.dll`, then runs the game.
 
-The payload is a flat container — `"WSPK"`, file count, then name/length/data per file — so the
-launcher needs no ZIP library and no `tar.exe`.
+The payload is a flat container (`"WSPK"`, count, then name/length/data), so no ZIP library or
+`tar.exe` is involved.
 
 ## Rebuilding
 
-Needs `x86_64-w64-mingw32-gcc` and Node.js:
-
 ```bash
-x86_64-w64-mingw32-gcc -O0 -municode -mwindows -o launcher.bin fix/launcher.c
-node fix/pack.js path/to/Sewer ./Sewer.exe ./launcher.bin
-```
+# the shim
+x86_64-w64-mingw32-gcc -shared -O2 -s -o fix/libdl.dll fix/libdl.c \
+    -Wl,--out-implib,libdl.dll.a -lkernel32
 
-`pack.js` takes `[sourceFolder] [outputExe] [launcherExe]`.
+# the launcher
+x86_64-w64-mingw32-gcc -O0 -municode -mwindows -o fix/launcher.bin fix/launcher.c
 
-To regenerate the shim from a release folder:
-
-```bash
-node fix/build-libdl.js path/to/Sewer
+# the single file
+node fix/pack.js path/to/Sewer ./Sewer.exe fix/launcher.bin
 ```
 
 ## Verified
 
 - All 13 embedded files unpack byte-identical to the originals.
-- Second launch reuses the existing install and launches directly.
-- `sewer.exe` runs from the unpacked folder: `smoke ok: 2122 tris`, exit 0.
-- Without `libdl.dll` the game fails to start (exit 53), confirming the shim is the fix.
+- Game runs from the unpacked folder: `smoke ok: 2122 tris`, exit 0.
+- Second launch reuses the install and goes straight to the game.
 
 ## Contents
 
