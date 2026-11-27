@@ -163,6 +163,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev, PWSTR args, int show) {
     }
     CloseHandle(self);
 
+    /* Preload our own libdl.dll from the install folder.
+     *
+     * libgomp-1.dll imports "libdl.dll" by bare name, so Windows may otherwise pick up an
+     * unrelated copy from PATH (Python, conda, Git, GIMP...) and fail with
+     * "entry point dlclose could not be located". Loading the correct file here pins it in the
+     * process before the loader resolves libgomp's imports. */
+    {
+        wchar_t dllPath[PATH_CAP];
+        _snwprintf(dllPath, PATH_CAP, L"%ls\\libdl.dll", installDir);
+        if (!LoadLibraryExW(dllPath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH) &&
+            !LoadLibraryW(dllPath))
+            show_error(L"Could not load the game's libdl.dll.\n"
+                       L"Your antivirus may have removed it.\nDownload Sewer.exe again.",
+                       GetLastError());
+    }
+
     _snwprintf(cmd, PATH_CAP * 2, L"\"%ls\"%ls", gameExe, args ? args : L"");
 
     ZeroMemory(&si, sizeof si);
